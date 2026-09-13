@@ -435,7 +435,7 @@ module.exports = {
 					outputDirectory: core.view.config.exportDirectory,
 					source: { product: build?.Product, buildKey: build?.BuildKey, version: build?.Version },
 					profile: {
-						name: 'decordump-glb-v1', version: nw.App.manifest.version,
+						name: 'decordump-glb-v2', version: nw.App.manifest.version,
 						upstream: 'c2fd7bde36a712be78a5da896c995b84fbfa2545', settings
 					},
 					limit,

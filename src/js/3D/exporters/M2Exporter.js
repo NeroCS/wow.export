@@ -391,6 +391,12 @@ class M2Exporter {
 					matName = textureMap.get(dataTextureKey).matName;
 			}
 
+			// Carry the M2 blend mode across so the glTF material is not written as flat opaque:
+			// that is what turns alpha cut-outs into filled quads and additive glows into black squares.
+			const m2Material = texUnit && this.m2.materials?.[texUnit.materialIndex];
+			if (m2Material)
+				gltf.setMaterialBlend(matName, m2Material.blendingMode, m2Material.flags);
+
 			gltf.addMesh(GeosetMapper.getGeosetName(mI, mesh.submeshID), indices, matName);
 		}
 

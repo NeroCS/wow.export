@@ -31,6 +31,22 @@ Each unique nonempty model ID with have > 0 is exported once through the existin
 M2/M3/WMO exporter. The batch ignores current category filters, selection, preview
 pose, and geoset masks. Unnamed files can still be fetched by ID.
 
+## Material blending
+
+glTF materials carry the M2 blend mode and flags rather than exporting as flat opaque:
+`blendingMode` 1 becomes `alphaMode: MASK`, 2 becomes `BLEND`, and the two-sided and unlit flags
+become `doubleSided` and `KHR_materials_unlit`. glTF has no additive or modulate mode, so 3/4/7
+and 5/6 export as `BLEND` plus `extras.blendMode` (`add`, `mod`, `mod2x`) with the raw
+`m2BlendingMode`/`m2MaterialFlags` beside it; a renderer that ignores extras still gets ordinary
+transparency instead of a solid black quad. The mapping lives in
+`src/js/3D/writers/gltf-material-blend.js` and is covered by `npm run test:decordump`.
+
+Exports made before this was added render alpha cut-outs as filled quads and glow billboards as
+black squares. The export profile is `decordump-glb-v2` because of it: resume reuses any GLB whose
+checksum still matches, so without a new profile a re-export would silently keep the opaque files.
+A re-export therefore lands in a new `decordump/<hash>/` folder, leaving the old one intact — point
+the planner at the new `catalog.json`.
+
 ## Output and resume
 
     decordump/<build-and-export-profile-hash>/

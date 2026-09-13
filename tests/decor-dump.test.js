@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { parse_dump, summarize } = require('../src/js/decor-dump');
 const { export_dump, inspect_glb } = require('../src/js/decor-dump-export');
+const { applyMaterialBlend, M2_BLEND, M2_MATERIAL_FLAG } = require('../src/js/3D/writers/gltf-material-blend');
 
 const header = 'recordID\tname\tcategory\tsubcategory\tsize\thave\tindoor\toutdoor\tcost\tmodelFDID\titemID';
 const row = (id, model, have = 1, name = 'Chair') => [id, name, 'Furniture', 'Chairs', 'Small', have, 1, 0, 2, model ?? '', 123].join('\t');
@@ -130,4 +131,34 @@ test('deduplicates, checkpoints, resumes, retries failures, separates builds and
 		assert.ok(root.startsWith(path.join(os.tmpdir(), 'wow-decordump-test-')));
 		await fs.rm(root, { recursive: true, force: true });
 	}
+});
+
+test('glTF materials carry the M2 blend mode instead of exporting as flat opaque', () => {
+	const blend = (blendingMode, flags = 0) => applyMaterialBlend({ name: 'm' }, { blendingMode, flags });
+
+	// Opaque stays untouched, so ordinary furniture exports exactly as before.
+	assert.deepEqual(blend(M2_BLEND.OPAQUE), { name: 'm' });
+
+	// Alpha key is the cut-out mode: leaves, chains and grates were exporting as filled quads.
+	const key = blend(M2_BLEND.ALPHA_KEY);
+	assert.equal(key.alphaMode, 'MASK');
+	assert.equal(key.alphaCutoff, 0.5);
+
+	assert.equal(blend(M2_BLEND.ALPHA).alphaMode, 'BLEND');
+
+	// Additive is the black-square case: glTF has no additive mode, so it rides in extras.
+	for (const mode of [M2_BLEND.NO_ALPHA_ADD, M2_BLEND.ADD, M2_BLEND.BLEND_ADD]) {
+		const add = blend(mode);
+		assert.equal(add.alphaMode, 'BLEND');
+		assert.equal(add.extras.blendMode, 'add');
+		assert.equal(add.extras.m2BlendingMode, mode);
+	}
+	assert.equal(blend(M2_BLEND.MOD).extras.blendMode, 'mod');
+	assert.equal(blend(M2_BLEND.MOD2X).extras.blendMode, 'mod2x');
+
+	// Flags are independent of the blend mode.
+	assert.equal(blend(M2_BLEND.OPAQUE, M2_MATERIAL_FLAG.TWO_SIDED).doubleSided, true);
+	assert.ok(blend(M2_BLEND.ADD, M2_MATERIAL_FLAG.UNLIT).extensions.KHR_materials_unlit);
+	assert.equal(blend(M2_BLEND.OPAQUE, M2_MATERIAL_FLAG.UNFOGGED).doubleSided, undefined);
+	assert.equal(applyMaterialBlend({ name: 'm' }, undefined).alphaMode, undefined);
 });

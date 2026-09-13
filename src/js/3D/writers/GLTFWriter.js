@@ -10,6 +10,7 @@ const core = require('../../core');
 const generics = require('../../generics');
 const ExportHelper = require('../../casc/export-helper');
 const BufferWrapper = require('../../buffer');
+const { applyMaterialBlend } = require('./gltf-material-blend');
 const BoneMapper = require('../BoneMapper');
 const AnimMapper = require('../AnimMapper');
 const log = require('../../log');
@@ -85,6 +86,7 @@ class GLTFWriter {
 
 		this.textures = new Map();
 		this.texture_buffers = new Map();
+		this.material_blends = new Map();
 		this.meshes = [];
 
 		// equipment models to append
@@ -97,6 +99,20 @@ class GLTFWriter {
 	 */
 	setTextureMap(textures) {
 		this.textures = textures;
+	}
+
+	/**
+	* Register the M2 material a texture is drawn with, so the glTF material can carry the real
+	* blend mode instead of defaulting to opaque. Without this, alpha-keyed cut-outs (leaves,
+	* chains, grates) export as filled quads and additive glows export as black squares.
+	* First registration for a texture wins; a texture drawn two ways in one model is rare.
+	* @param {string} matName
+	* @param {number} blendingMode M2Blend: 0 opaque, 1 alpha key, 2 alpha, 3/4/7 additive, 5/6 modulate
+	* @param {number} flags M2 material flags: 0x1 unlit, 0x2 unfogged, 0x4 two-sided
+	*/
+	setMaterialBlend(matName, blendingMode, flags) {
+		if (matName && !this.material_blends.has(matName))
+			this.material_blends.set(matName, { blendingMode, flags });
 	}
 
 	/**
@@ -908,6 +924,7 @@ class GLTFWriter {
 
 		const materialMap = new Map();
 		const texture_buffer_views = [];
+		let unlit_used = false;
 
 		for (const [fileDataID, texFile] of this.textures) {
 			const imageIndex = root.images.length;
@@ -931,7 +948,9 @@ class GLTFWriter {
 			}
 
 			root.textures.push({ source: imageIndex });
-			root.materials.push({
+
+			const blend = this.material_blends.get(texFile.matName);
+			const material = {
 				name: path.basename(texFile.matName, path.extname(texFile.matName)),
 				emissiveFactor: [0, 0, 0],
 				pbrMetallicRoughness: {
@@ -940,10 +959,20 @@ class GLTFWriter {
 					},
 					metallicFactor: 0
 				}
-			});
+			};
+
+			applyMaterialBlend(material, blend);
+			if (material.extensions?.KHR_materials_unlit)
+				unlit_used = true;
+
+			root.materials.push(material);
 
 			materialMap.set(texFile.matName, materialIndex);
 		}
+
+		// glTF requires every extension a material uses to be declared up front.
+		if (unlit_used)
+			root.extensionsUsed = ['KHR_materials_unlit'];
 
 		const mesh_component_meta = Array(this.meshes.length);
 		for (let i = 0, n = this.meshes.length; i < n; i++) {
