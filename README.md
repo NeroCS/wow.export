@@ -2,6 +2,8 @@
 
 # wow.export
 
+This fork adds DecorDump inventory import and resumable GLB export. See [DECOR_DUMP.md](DECOR_DUMP.md) for build and usage instructions.
+
 wow.export is the number one export toolkit for World of Warcraft, providing tools for extracting and converting files from the game client or public CDN servers.
 
 ## Main Features

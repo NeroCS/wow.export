@@ -25,6 +25,11 @@
 		"webp-wasm": "^1.0.6"
 	},
 	"devDependencies": {
-		"@types/bun": "^1.2.21"
+		"@types/bun": "^1.2.21",
+		"bun": "1.4.2"
+	},
+	"scripts": {
+		"test:decordump": "node --test tests/decor-dump.test.js",
+		"build:decordump": "bun scripts/build-decordump.js"
 	}
 }

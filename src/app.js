@@ -11,7 +11,7 @@
 BUILD_RELEASE = process.env.BUILD_RELEASE === 'true';
 
 // check for --disable-auto-update flag
-const DISABLE_AUTO_UPDATE = nw.App.argv.includes('--disable-auto-update');
+const DISABLE_AUTO_UPDATE = nw.App.manifest.decorDump === true || nw.App.argv.includes('--disable-auto-update');
 
 /**
  * crash() is used to inform the user that the application has exploded.

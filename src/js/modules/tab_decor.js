@@ -14,6 +14,11 @@ const textureRibbon = require('../ui/texture-ribbon');
 const textureExporter = require('../ui/texture-exporter');
 const modelViewerUtils = require('../ui/model-viewer-utils');
 
+const { parse_dump, summarize, MAX_BYTES } = require('../decor-dump');
+const { export_dump } = require('../decor-dump-export');
+const WMOExporter = require('../3D/exporters/WMOExporter');
+let imported_dump = null;
+
 const UNCATEGORIZED_ID = -1;
 
 let active_renderer;
@@ -295,6 +300,18 @@ module.exports = {
 				<component :is="$components.MenuButton" :options="$core.view.menuButtonDecor" :default="$core.view.config.exportDecorFormat" @change="$core.view.config.exportDecorFormat = $event" class="upward" :disabled="$core.view.isBusy" @click="export_decor"></component>
 			</div>
 			<div id="decor-sidebar" class="sidebar">
+				<span class="header">My DecorDump</span>
+				<input ref="decorDumpFile" type="file" accept=".lua" style="display: none" @change="import_dump"/>
+				<button :disabled="$core.view.isBusy" @click="$refs.decorDumpFile.click()">Import DecorDump.lua</button>
+				<template v-if="dump">
+					<p>{{ dump.name }}</p>
+					<p>{{ dump.summary.availableEntries }} available entries / {{ dump.summary.models }} models</p>
+					<p v-if="dump.summary.missingModels">{{ dump.summary.missingModels }} entries have no model ID.</p>
+					<p>Counts include stored and redeemable copies. Already-placed decor is not in this dump.</p>
+					<button :disabled="$core.view.isBusy || !dump.summary.models" @click="export_dump_models(10)">Export first 10 GLBs</button>
+					<button :disabled="$core.view.isBusy || !dump.summary.models" @click="export_dump_models(0)">Export all available GLBs</button>
+					<p>Completed models are reused. Files go into a build-specific folder under your export directory.</p>
+				</template>
 				<span class="header">Categories</span>
 				<div class="decor-category-list">
 					<div v-for="group in $core.view.decorCategoryGroups" :key="group.id">
@@ -372,7 +389,98 @@ module.exports = {
 		</div>
 	`,
 
+	data() {
+		return { dump: imported_dump };
+	},
+
 	methods: {
+		async import_dump(event) {
+			const file = event.target.files[0];
+			if (!file || this.$core.view.isBusy)
+				return;
+			using _lock = this.$core.create_busy_lock();
+			try {
+				if (file.size > MAX_BYTES)
+					throw new Error('DecorDump exceeds the 8 MiB import limit.');
+				const entries = parse_dump(await file.text());
+				imported_dump = { name: file.name, entries, summary: summarize(entries) };
+				this.dump = imported_dump;
+				this.$core.setToast('success', 'Imported ' + entries.length + ' DecorDump catalog entries.');
+			} catch (error) {
+				this.$core.setToast('error', 'DecorDump import failed: ' + error.message, null, -1);
+			} finally {
+				event.target.value = '';
+			}
+		},
+
+		async export_dump_models(limit) {
+			const core = this.$core;
+			if (!this.dump?.summary.models || core.view.isBusy)
+				return;
+			if (!core.view.config.modelsExportTextures || !core.view.config.modelsExportAlpha) {
+				core.setToast('info', 'Enable Textures and Texture Alpha in the Export section before exporting DecorDump.');
+				return;
+			}
+			const count = limit ? Math.min(limit, this.dump.summary.models) : this.dump.summary.models;
+			const helper = new ExportHelper(count, 'decor model');
+			helper.start();
+			// Keep the busy lock until the batch has saved its cancellation checkpoint.
+			helper.isCancelled = () => core.view.exportCancelled;
+			try {
+				const build = core.view.casc.build;
+				const settings = Object.fromEntries(Object.entries(core.view.config)
+					.filter(([key]) => /^(modelsExport|enableShared|removePathSpaces|enableAbsoluteGLTFPaths|pathFormat)/.test(key))
+					.sort(([a], [b]) => a.localeCompare(b)));
+				const result = await export_dump(this.dump.entries, {
+					outputDirectory: core.view.config.exportDirectory,
+					source: { product: build?.Product, buildKey: build?.BuildKey, version: build?.Version },
+					profile: {
+						name: 'decordump-glb-v1', version: nw.App.manifest.version,
+						upstream: 'c2fd7bde36a712be78a5da896c995b84fbfa2545', settings
+					},
+					limit,
+					shouldCancel: () => core.view.exportCancelled,
+					onProgress: asset => helper.mark(asset.file, asset.status === 'ready' || asset.status === 'partial', asset.error),
+					exportModel: async (id, out) => {
+						const data = await core.view.casc.getFile(id);
+						const type = modelViewerUtils.detect_model_type(data);
+						const extension = modelViewerUtils.get_model_extension(type);
+						const file_name = listfile.getByID(id) ?? listfile.formatUnknownFile(id, extension);
+						try {
+							await modelViewerUtils.export_model({
+								core, data, file_data_id: id, file_name, format: 'GLB',
+								export_path: out, helper, file_manifest: []
+							});
+						} finally {
+							if (type === modelViewerUtils.MODEL_TYPE_WMO)
+								WMOExporter.clearCache();
+						}
+						return {
+							modelType: extension.slice(1),
+							warnings: type === modelViewerUtils.MODEL_TYPE_WMO
+								? ['Upstream WMO GLB export omits embedded doodads.']
+								: type === modelViewerUtils.MODEL_TYPE_M3 ? ['M3 export support is limited upstream.'] : []
+						};
+					}
+				});
+				helper.finish(false);
+				const assets = result.manifest.assets;
+				const complete = assets.filter(asset => asset.status === 'ready' || asset.status === 'partial').length;
+				const partial = assets.filter(asset => asset.status === 'partial').length;
+				const failed = assets.filter(asset => asset.status === 'failed').length;
+				const message = 'DecorDump ' + result.manifest.runState + ': ' + complete + '/' + assets.length +
+					' models saved or reused, ' + partial + ' with warnings, ' + failed + ' failed. See catalog.json.';
+				core.setToast(failed || partial || result.manifest.runState === 'cancelled' ? 'info' : 'success',
+					message, { 'Open Output': () => nw.Shell.openItem(result.directory) }, -1);
+			} catch (error) {
+				helper.finish(false);
+				log.write('DecorDump export failed: %s', error.stack || error.message);
+				core.setToast('error', 'DecorDump export failed: ' + error.message, null, -1);
+			} finally {
+				helper.finish(false);
+			}
+		},
+
 		async initialize() {
 			this.$core.showLoadingScreen(3);
 
